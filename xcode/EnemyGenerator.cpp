@@ -25,6 +25,24 @@ EnemyGenerator::EnemyGenerator(float _iv, float _lt)
 	rand = new Rand();
 }
 
+int EnemyGenerator::collide(Vec2f circle, float radius, bool remove)
+{
+	int coll = 0;
+	
+	vector<Enemy*>::iterator it;
+	for(it = enemies.begin(); it < enemies.end(); it++)
+	{
+		if( (*it)->pos.distance(circle) < 4.0f + radius + 20.0f )
+		{
+			coll++;
+			if(remove) enemies.erase(it);
+		}
+			
+	}
+	
+	return coll;
+}
+
 void EnemyGenerator::update(float dt)
 {
 	last = total;
@@ -61,12 +79,15 @@ Enemy::Enemy(float lt, Rand* rand)
 {
 	lifetime = lt;
 	expired = .0f;
-	int ty = rand->nextInt(0,10);
+//	int ty = rand->nextInt(0,10);
 	
+	/*
 	if(ty < 6) type = BAD;
 	else if(ty < 8) type = UGLY;
 	else type = GOOD;
+	*/
 	
+	type = GOOD;
 	
 	pos = Vec2f(rand->nextFloat(0, G_WIDTH), rand->nextFloat(0, G_HEIGHT));
 	
@@ -86,12 +107,12 @@ void Enemy::draw()
 	
 	gl::translate(pos);
 	if(type == GOOD)
-		gl::color(Color(.7f, .9f, 1.0f));
+		gl::color(PLANETCOLOR);
 	else if(type == BAD)
 		gl::color(Color(1.0f, .1f, 1.0f));
 	else
 		gl::color(Color(1.0f, 1.0f, .1f));
-	gl::drawSolidCircle(Vec2f(.0f, .0f), 10.0f, 32);
+	gl::drawSolidCircle(Vec2f(.0f, .0f), 4.0f, 32);
 	
 	glPopMatrix();
 }

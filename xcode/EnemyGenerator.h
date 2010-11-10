@@ -8,7 +8,7 @@
  */
 #pragma once
 #include "cinder/Rand.h"
-
+#include "common.h"
 
 using namespace ci;
 using namespace std;
@@ -44,16 +44,19 @@ typedef struct
 
 class EnemyGenerator {
 private:
-	vector<Enemy*> enemies;
+	
 	float interval, lifetime;
 	float last, acc, total;
 	Rand* rand;
 	
 	
 public:
+	vector<Enemy*> enemies;
+	
 	EnemyGenerator(float interval, float lifetime);
 //	~EnemyGenerator();
 	
+	int collide(Vec2f circle, float radius, bool remove);
 	void update(float dt);
 	void draw();
 };
