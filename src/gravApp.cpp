@@ -4,6 +4,9 @@
 #include "cinder/params/Params.h"
 #include "EnemyGenerator.h"
 #include "globals.h"
+#include "cinder/audio/Output.h"
+#include "cinder/audio/Callback.h"
+#include "Resources.h"
 
 #define JUMPINERT .3f
 #define MAXCHARGE 4.0f
@@ -107,6 +110,8 @@ public:
 		glPushMatrix();
 		gl::translate(pos);
 		
+		gl::color(color);
+		
 		gl::drawSolidCircle(Vec2f(.0f, .0f), 4.0f, 16);
 		
 		glPopMatrix();
@@ -117,6 +122,7 @@ class Moon {
 public:
 	Vec2f pos, vel, acc;
 	Planet* closestPlanet;
+	Planet* nearest;
 	int player;
 	int turn;
 	float jumpInert;
@@ -229,6 +235,8 @@ public:
 		//	vel += (-params.repulse)* moonToPlanet.normalized() / moonToPlanet.length();
 		}
 		
+		nearest = closest;
+		
 		Vec2f moonToPlanet = closest->pos - pos;
 		
 		if(!closestPlanet && moonToPlanet.length() > closest->radius * 2.5f)
@@ -237,7 +245,7 @@ public:
 					closest->radius * closest->radius * closest->radius * (2.0f/3.0f) * M_PI 
 					/ (math<float>::max(moonToPlanet.length() * moonToPlanet.length(), 80.0f));
 		}
-		if(!jumpInert && !closestPlanet && moonToPlanet.length() < closest->radius * 1.7f)
+		if(!jumpInert && !closestPlanet && moonToPlanet.length() < closest->radius * 1.7f && losing.size() == 0)
 		{
 			closestPlanet = closest;
 			
@@ -353,11 +361,15 @@ public:
 	void prepareSettings(Settings* settings);
 	void keyDown( KeyEvent event );
 	void keyUp( KeyEvent event );
+	void sineWave( uint64_t inSampleOffset, uint32_t ioSampleCount, audio::Buffer32f *ioBuffer );
+	void squareWave( uint64_t inSampleOffset, uint32_t ioSampleCount, audio::Buffer32f *ioBuffer );
+	void drawBG();
 	
 	vector<Planet*> planets;
 	Moon* moon1;
 	Moon* moon2;
 	Moon* curMoon;
+	Moon* winner;
 	float last;
 	EnemyGenerator* egen;
 	
@@ -365,12 +377,30 @@ public:
 	paramStruct params;
 	int turn;
 	float turncounter, turntime;
+	
+	float mFreqTarget, mFreqTargetQ;
+	float mPhase, mPhaseQ;
+	float mPhaseAdjust, mPhaseAdjustQ;
+	float mMaxFreq, mMaxFreqQ;
+	
+	audio::SourceRef s_hit;
+	audio::SourceRef s_up;
+	shared_ptr< audio::Callback<gravApp, float> > cb1, cb2;
+	
+	float collInert;
+	bool end;
 };
 
 
 void gravApp::prepareSettings(Settings* settings)
 {
 //	settings->setWindowSize(G_WIDTH, G_HEIGHT);
+	
+	cb1 = audio::createCallback( this, &gravApp::sineWave ) ;
+	cb2 = audio::createCallback( this, &gravApp::squareWave );
+	
+	audio::Output::play( cb1 );
+	audio::Output::play( cb2 );
 	
 	settings->setFullScreen(true);
 }
@@ -410,12 +440,31 @@ void gravApp::setup()
 	turntime = 8.0f;
 	turncounter = .0f;
 	turn = 1;
+	collInert = .0f;
 	
 	gl::enableAlphaBlending( false );
 	
 	curMoon = moon1;
 	
+	// audio
 	
+	mMaxFreq = 2000.0f;
+	mFreqTarget = 0.0f;
+	mPhase = 0.0f;
+	mPhaseAdjust = 0.0f;
+	
+	mMaxFreqQ = 2000.0f;
+	mFreqTargetQ = 0.0f;
+	mPhaseQ = 0.0f;
+	mPhaseAdjustQ = 0.0f;
+	
+	
+	
+	s_hit = audio::load( loadResource( RES_HIT ) );
+	s_up = audio::load( loadResource( RES_UP ) );
+	
+	end = false;
+	winner = 0;
 }
 
 void gravApp::mouseDown( MouseEvent event )
@@ -440,6 +489,9 @@ void gravApp::update()
 	
 	params.turn = turn;
 	
+	if(collInert > .0f) collInert -= dt;
+	if(collInert < .0f) collInert = .0f;
+	
 	vector<Planet*>::iterator it;
 	for(it = planets.begin(); it < planets.end(); it++)
 	{
@@ -457,15 +509,21 @@ void gravApp::update()
 	moon1->score += num1;
 	moon2->score += num2;
 	
+	if(num1 > 0 || num2 > 0)
+		audio::Output::play( s_up );
+	
 	if(moon1->pos.distance(moon2->pos) < 3*MOONSIZE)
 	{
 		Moon* loser = moon1->vel.length() < moon2->vel.length() ? moon1 : moon2;
 		Moon* winner = (loser == moon1 ? moon2 : moon1);
 		
-		if(loser->losing.size() == 0 && loser->score >= 3)
+		if(loser->losing.size() == 0 && loser->score >= 3 && !collInert)
 		{
+			audio::Output::play( s_hit );
 			loser->score -= 3;
 			loser->loseScore(winner->vel, 3);
+			
+			collInert = 5.0f;
 		}
 		
 	}
@@ -475,15 +533,93 @@ void gravApp::update()
 	if(num2 > 0)
 		cout << "SCORE P2";
 	
+	
+	mFreqTarget = math<float>::clamp(moon1->nearest->pos.distance(moon1->pos) + 80.0f, 100.0f, 1000.0f);
+	mFreqTargetQ = math<float>::clamp(moon2->nearest->pos.distance(moon2->pos) + 80.0f, 100.0f, 1000.0f);
+	
+	if(moon1->score >= 12)
+	{
+		end = true;
+		winner = moon1;
+	} else if(moon2->score >= 12)
+	{
+		end = true;
+		winner = moon2;
+	}
+}
+
+void gravApp::drawBG()
+{
+	glPushMatrix();
+	
+	gl::translate(Vec2f(getWindowWidth()/2.0f, getWindowHeight()/2.0f));
+	
+	gl::rotate(getElapsedSeconds()*5.0f);
+	
+	
+	
+	gl::drawSolidCircle(Vec2f(.0f, .0f), 200.0f, 128);
+	
+	float sstepsize = M_PI/4.0f;
+	int ssteps = 2*M_PI/sstepsize + 1;
+	for(int i = 0; i < ssteps; i++)
+	{
+		glBegin(GL_TRIANGLE_STRIP);
+		
+		for(int j = 0; j < 16; j++)
+		{
+			float offset = i*sstepsize;
+			glVertex2f(cart(250.0f, offset + j * sstepsize/24.0f));
+			glVertex2f(cart(1200.0f, offset + j * sstepsize/24.0f));
+		}
+		
+		glEnd();
+	}
+	
+	glPopMatrix();
 }
 
 void gravApp::draw()
 {
+	if(end) 
+	{
+		gl::clear( winner->color ); 
+		return;
+	}
 	// clear out the window with black
 //	gl::enableDepthRead();
 //	gl::enableDepthWrite();
 	gl::clear( Color( 0, 0, 0 ) ); 
 	gl::color(Color(1.0f, 1.0f, .0f));
+	
+	
+	/// BG
+	//gl::enableWireframe();
+	
+	glPushAttrib( GL_ALL_ATTRIB_BITS );
+	glEnable( GL_POLYGON_OFFSET_FILL );
+	glPolygonOffset( -2.5f, -2.5f );
+	glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+	glLineWidth( 3.0f );
+	
+	gl::color(Color(1.0f, .5f, .0f));
+	drawBG();
+	
+	//
+	glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+	gl::color(ColorA(.0f, .0f, .0f, .8f));
+	drawBG();
+	
+	//gl::color(ColorA(1.0f, .5f, .0f, .3f));
+	//drawBG();
+
+	
+	glPopAttrib();
+	
+	
+//	gl::disableWireframe();
+	
+	/// /BG
 	
 	vector<Planet*>::iterator it;
 	for(it = planets.begin(); it < planets.end(); it++)
@@ -579,6 +715,32 @@ void gravApp::keyUp( KeyEvent event)
 			moon1->jump();
 		if(turn == 2)
 			moon2->jump();
+	}
+}
+
+void gravApp::sineWave( uint64_t inSampleOffset, uint32_t ioSampleCount, audio::Buffer32f *ioBuffer ) 
+{
+	mPhaseAdjust = mPhaseAdjust * 0.95f + ( mFreqTarget / 44100.0f ) * 0.05f;
+	for( int  i = 0; i < ioSampleCount; i++ ) {
+		mPhase += mPhaseAdjust;
+		mPhase = mPhase - math<float>::floor( mPhase );
+		float val = math<float>::sin( mPhase * 2.0f * M_PI );
+		
+		ioBuffer->mData[i*ioBuffer->mNumberChannels] = val;
+		ioBuffer->mData[i*ioBuffer->mNumberChannels + 1] = val;
+	}
+}
+
+void gravApp::squareWave( uint64_t inSampleOffset, uint32_t ioSampleCount, audio::Buffer32f *ioBuffer ) 
+{
+	mPhaseAdjustQ = mPhaseAdjustQ * 0.95f + ( mFreqTargetQ * 1.5f / 44100.0f ) * 0.05f;
+	for( int  i = 0; i < ioSampleCount; i++ ) {
+		mPhaseQ += mPhaseAdjustQ;
+		mPhaseQ = mPhaseQ - math<float>::floor( mPhaseQ );
+		float val = math<float>::sin( mPhaseQ * 2.0f * M_PI );
+		
+		ioBuffer->mData[i*ioBuffer->mNumberChannels] = val;
+		ioBuffer->mData[i*ioBuffer->mNumberChannels + 1] = val;
 	}
 }
 
