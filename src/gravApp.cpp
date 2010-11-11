@@ -7,9 +7,10 @@
 #include "cinder/audio/Output.h"
 #include "cinder/audio/Callback.h"
 #include "Resources.h"
+#include "cinder/Serial.h"
 
 #define JUMPINERT .3f
-#define MAXCHARGE 4.0f
+#define MAXCHARGE 2.0f
 #define MOONSIZE 10.0f
 
 using namespace ci;
@@ -389,12 +390,23 @@ public:
 	
 	float collInert;
 	bool end;
+	
+	// SERIAL
+	
+	bool		bSendSerialMessage, bTextureComplete;			// a flag for sending serial
+	Serial serial;
+	uint8_t			ctr;
+	std::string lastString;
+	
+	double sinceLastRead, lastUpdate;
+	
+	int lastOn;
 };
 
 
 void gravApp::prepareSettings(Settings* settings)
 {
-//	settings->setWindowSize(G_WIDTH, G_HEIGHT);
+	settings->setWindowSize(G_WIDTH, G_HEIGHT);
 	
 	cb1 = audio::createCallback( this, &gravApp::sineWave ) ;
 	cb2 = audio::createCallback( this, &gravApp::squareWave );
@@ -402,7 +414,7 @@ void gravApp::prepareSettings(Settings* settings)
 	audio::Output::play( cb1 );
 	audio::Output::play( cb2 );
 	
-	settings->setFullScreen(true);
+//	settings->setFullScreen(true);
 }
 
 void gravApp::setup()
@@ -415,9 +427,9 @@ void gravApp::setup()
 	planets.push_back(new Planet(Vec2f(650.0f, 400.0f), 30.0f));
 	planets.push_back(new Planet(Vec2f(450.0f, 320.0f), 70.0f));
 	planets.push_back(new Planet(Vec2f(520.0f, 560.0f), 40.0f));
-	planets.push_back(new Planet(Vec2f(930.0f, 260.0f), 40.0f));
-	planets.push_back(new Planet(Vec2f(1120.0f, 760.0f), 50.0f));
-	planets.push_back(new Planet(Vec2f(1200.0f, 800.0f), 30.0f));
+//	planets.push_back(new Planet(Vec2f(930.0f, 260.0f), 40.0f));
+//	planets.push_back(new Planet(Vec2f(1120.0f, 760.0f), 50.0f));
+//	planets.push_back(new Planet(Vec2f(1200.0f, 800.0f), 30.0f));
 	
 	moon1 = new Moon(Vec2f(50.0f, 50.0f), Vec2f(50.0f, .0f), Vec2f(.0f, .0f), 1);
 	moon2 = new Moon(Vec2f(250.0f, 750.0f), Vec2f(-50.0f, .0f), Vec2f(.0f, .0f), 2);
@@ -465,6 +477,53 @@ void gravApp::setup()
 	
 	end = false;
 	winner = 0;
+	
+	
+	/// SERIAL
+	
+	ctr = 0;
+	lastString = "";
+	sinceLastRead = 0.0;
+	lastUpdate = 0.0;
+	
+	bSendSerialMessage = false;
+	
+	const vector<Serial::Device> &devices( Serial::getDevices() );
+	for( vector<Serial::Device>::const_iterator deviceIt = devices.begin(); deviceIt != devices.end(); ++deviceIt ) {
+		console() << "Device: " << deviceIt->getName() << endl;
+	}
+	
+	try {
+		Serial::Device dev = Serial::findDeviceByNameContains("tty.usbserial");
+		serial = Serial( dev, 9600);
+	}
+	catch( ... ) {
+		console() << "There was an error initializing the serial device!" << std::endl;
+		exit( -1 );
+	}
+	
+	// wait for * as a sign for first contact
+	char contact = 0;
+	while(contact != '*')
+	{
+		contact = (char) serial.readByte();
+	}
+	
+	// request actual data
+	serial.writeByte(ctr);
+	
+	// clear accumulated contact messages in buffer
+	char b = '*';
+	while(serial.getNumBytesAvailable() > -1)
+	{
+		b = serial.readByte();
+		console() << b << "_";
+	}
+	
+	serial.flush();
+	
+	lastOn = 0;
+	
 }
 
 void gravApp::mouseDown( MouseEvent event )
@@ -545,6 +604,71 @@ void gravApp::update()
 	{
 		end = true;
 		winner = moon2;
+	}
+	
+	
+	/// SERIAL
+	
+	lastUpdate = now;
+	sinceLastRead += dt;
+	
+	if(sinceLastRead > .05)
+	{
+		bSendSerialMessage = true;
+		sinceLastRead = 0.0;
+	}
+	
+	
+	if (bSendSerialMessage)
+	{
+		// request next chunk
+		serial.writeByte(ctr);
+		
+		int on;
+		
+		try{
+			// read until newline, to a maximum of BUFSIZE bytes
+			on = serial.readByte();
+			
+			
+			
+		} catch(SerialTimeoutExc e) {
+			console() << "timeout" << endl;
+		}
+		
+		
+		bSendSerialMessage = false;
+		
+		ctr+=8;
+		console() << on << endl;
+		serial.flush();
+		
+		if(on == 1 && lastOn == 0)
+		{
+			if(turn == 1 && !moon1->charging)
+				moon1->startCharge();
+			if(turn == 2 && !moon2->charging)
+				moon2->startCharge();
+		}
+		
+		if(on == 0 && lastOn == 1)
+		{
+			if(turn == 1)
+				moon1->jump();
+			if(turn == 2)
+				moon2->jump();
+		}
+		
+		if(on == 0 && lastOn == 0)
+		{
+				moon1->charging = false;
+				moon2->charging = false;
+				moon1->charge = .0f;
+				moon2->charge = .0f;
+		}
+		
+		
+		lastOn = on;
 	}
 }
 
